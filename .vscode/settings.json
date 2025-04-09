@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "execinfo.h": "c",
+        "unistd.h": "c"
+    }
+}
