@@ -1,12 +1,13 @@
-#include "lab.h"
+#include <stdio.h>
+#include <stdbool.h>
+#include <sys/mman.h>
+#include <string.h>
+#include <stddef.h>
 #include <assert.h>
-#include <signal.h>   
+#include <signal.h>
 #include <execinfo.h>
 #include <unistd.h>
 #include <time.h>
-#include <sys/mman.h>
-#include <errno.h>
-#include <string.h>
 #ifdef __APPLE__
 #include <sys/errno.h>
 #else
@@ -15,10 +16,11 @@
 
 #include "lab.h"
 
-#define handle_error_and_die(msg)   \
-    do {                            \
-        perror(msg);                \
-        raise(SIGKILL);             \
+#define handle_error_and_die(msg) \
+    do                            \
+    {                             \
+        perror(msg);              \
+        raise(SIGKILL);          \
     } while (0)
 
 /**
@@ -50,42 +52,53 @@ struct avail *buddy_calc(struct buddy_pool *pool, struct avail *block)
 /**
  * Initialize a new memory pool using the buddy algorithm.
  */
-void buddy_init(struct buddy_pool *pool, size_t size) {
-    if (size == 0) {
-        size = UINT64_C(1) << DEFAULT_K;
-    } else {
-        size = UINT64_C(1) << btok(size);
+void buddy_init(struct buddy_pool *pool, size_t size)
+{
+    size_t kval = 0;
+    if (size == 0)
+        kval = DEFAULT_K;
+    else
+        kval = btok(size);
+
+    if (kval < MIN_K)
+        kval = MIN_K;
+    if (kval > MAX_K)
+        kval = MAX_K - 1;
+
+    //make sure pool struct is cleared out
+    memset(pool,0,sizeof(struct buddy_pool));
+    pool->kval_m = kval;
+    pool->numbytes = (UINT64_C(1) << pool->kval_m);
+    //Memory map a block of raw memory to manage
+    pool->base = mmap(
+        NULL,                               /*addr to map to*/
+        pool->numbytes,                     /*length*/
+        PROT_READ | PROT_WRITE,             /*prot*/
+        MAP_PRIVATE | MAP_ANONYMOUS,        /*flags*/
+        -1,                                 /*fd -1 when using MAP_ANONYMOUS*/
+        0                                   /* offset 0 when using MAP_ANONYMOUS*/
+    );
+    if (MAP_FAILED == pool->base)
+    {
+        handle_error_and_die("buddy_init avail array mmap failed");
     }
 
-    if (size < (UINT64_C(1) << MIN_K)) {
-        size = UINT64_C(1) << MIN_K;
-    }
-
-    pool->numbytes = size;
-    pool->kval_m = btok(size);
-    pool->base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-    if (pool->base == MAP_FAILED) {
-        pool->base = NULL;
-        return;
-    }
-
-    for (size_t i = 0; i <= pool->kval_m; i++) {
-        pool->avail[i].tag = BLOCK_UNUSED;
+    //Set all blocks to empty. We are using circular lists so the first elements just point
+    //to an available block. Thus the tag, and kval feild are unused burning a small bit of
+    //memory but making the code more readable. We mark these blocks as UNUSED to aid in debugging.
+    for (size_t i = 0; i <= kval; i++)
+    {
+        pool->avail[i].next = pool->avail[i].prev = &pool->avail[i];
         pool->avail[i].kval = i;
-        pool->avail[i].next = &pool->avail[i];
-        pool->avail[i].prev = &pool->avail[i];
+        pool->avail[i].tag = BLOCK_UNUSED;
     }
 
-    pool->avail[pool->kval_m].tag = BLOCK_AVAIL;
-    pool->avail[pool->kval_m].next = (struct avail *)pool->base;
-    pool->avail[pool->kval_m].prev = (struct avail *)pool->base;
-
-    struct avail *base_block = (struct avail *)pool->base;
-    base_block->tag = BLOCK_AVAIL;
-    base_block->kval = pool->kval_m;
-    base_block->next = &pool->avail[pool->kval_m];
-    base_block->prev = &pool->avail[pool->kval_m];
+    //Add in the first block
+    pool->avail[kval].next = pool->avail[kval].prev = (struct avail *)pool->base;
+    struct avail *m = pool->avail[kval].next;
+    m->tag = BLOCK_AVAIL;
+    m->kval = kval;
+    m->next = m->prev = &pool->avail[kval];
 }
 
 /**
@@ -112,8 +125,8 @@ void *buddy_malloc(struct buddy_pool *pool, size_t size) {
     }
 
     //R2 Remove from list
-    struct avail *block = pool->avail[j].next;
-    assert(rval->kval ==j);
+    struct avail *rval = pool->avail[j].next;
+    assert(rval->kval == j);
     assert(rval->tag == BLOCK_AVAIL);
     struct avail *p = rval->next;
     pool->avail[j].next = p;
@@ -125,7 +138,7 @@ void *buddy_malloc(struct buddy_pool *pool, size_t size) {
     {
         //R4 split thee block
         j--;
-        struct avail *buddy = (struct avail *)((uintptr_t)block + (UINT64_C(1) << j));
+        struct avail *buddy = (struct avail *)((uintptr_t)rval + (UINT64_C(1) << j));
         buddy->tag = BLOCK_AVAIL;
         buddy->kval = j;
         buddy->next = &pool->avail[j];
@@ -136,7 +149,7 @@ void *buddy_malloc(struct buddy_pool *pool, size_t size) {
     }
     rval->kval=kval;
     rval->next = rval->prev = NULL; // Clean up pointers
-    assertt(rval->tag == BLOCK_RESERVED);
+    assert(rval->tag == BLOCK_RESERVED);
     return (rval + 1); // Return pointer to the memory after the avail
 }
 

@@ -8,6 +8,7 @@
 #endif
 #include "harness/unity.h"
 #include "../src/lab.h"
+#include <string.h>
 
 
 void setUp(void) {
@@ -133,6 +134,57 @@ void test_buddy_init(void)
     }
 }
 
+// Chat test
+void test_buddy_malloc_multiple_and_free(void)
+{
+  fprintf(stderr, "->Testing multiple allocations and frees\n");
+  struct buddy_pool pool;
+  size_t size = UINT64_C(1) << MIN_K;
+  buddy_init(&pool, size << 2); // 4 blocks worth
+
+  void *a = buddy_malloc(&pool, 1);
+  void *b = buddy_malloc(&pool, 1);
+  void *c = buddy_malloc(&pool, 1);
+  void *d = buddy_malloc(&pool, 1);
+
+  assert(a && b && c && d);
+  assert(a != b && b != c && c != d);
+
+  buddy_free(&pool, b);
+  buddy_free(&pool, a);
+  buddy_free(&pool, d);
+  buddy_free(&pool, c);
+
+  check_buddy_pool_full(&pool);
+  buddy_destroy(&pool);
+}
+
+// Chat test
+void test_buddy_realloc_resize(void)
+{
+  fprintf(stderr, "->Testing realloc growing and shrinking\n");
+  struct buddy_pool pool;
+  buddy_init(&pool, UINT64_C(1) << DEFAULT_K);
+
+  void *ptr = buddy_malloc(&pool, 32);
+  assert(ptr != NULL);
+  strcpy(ptr, "Hello, buddy!");
+
+  // Grow
+  void *bigger = buddy_realloc(&pool, ptr, 128);
+  assert(bigger != NULL);
+  assert(strcmp(bigger, "Hello, buddy!") == 0);
+
+  // Shrink
+  void *smaller = buddy_realloc(&pool, bigger, 16);
+  assert(smaller != NULL);
+  assert(strcmp(smaller, "Hello, buddy!") == 0);
+
+  buddy_free(&pool, smaller);
+  check_buddy_pool_full(&pool);
+  buddy_destroy(&pool);
+}
+
 
 int main(void) {
   time_t t;
@@ -143,6 +195,8 @@ int main(void) {
 
   UNITY_BEGIN();
   RUN_TEST(test_buddy_init);
+  RUN_TEST(test_buddy_malloc_multiple_and_free);
+  RUN_TEST(test_buddy_realloc_resize);
   RUN_TEST(test_buddy_malloc_one_byte);
   RUN_TEST(test_buddy_malloc_one_large);
 return UNITY_END();
